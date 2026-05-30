@@ -12,6 +12,8 @@ target_include_directories(sqlite3 PUBLIC third_party)
 target_compile_options(sqlite3 PRIVATE /W0)
 
 # ---------- soxr resampler ----------
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/soxr/cmake/Modules")
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WITH_OPENMP OFF CACHE BOOL "" FORCE)

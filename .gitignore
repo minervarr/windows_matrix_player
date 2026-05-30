@@ -3,3 +3,5 @@ build/
 *.db
 *.user
 .vs/
+.antigravitycli/
+matrix_player.db

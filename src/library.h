@@ -1,36 +1,80 @@
 #pragma once
+#include <windows.h>
 #include <string>
 #include <vector>
-
-// TODO(parallel-scan): Use std::thread pool (one per CPU core) like the Android
-// player's ExecutorService scan for large libraries on NVMe.
-// TODO(formats): Add DSF/DFF, WAV, MP3 (via FFmpeg) once decoder layer is swapped.
+#include <map>
+#include <memory>
+#include <functional>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 struct Track {
     int         id = 0;
     std::string title;
     std::string artist;
+    std::string albumArtist;
     std::string album;
     std::string filePath;
-    int         durationMs = 0;
-    int         sampleRate = 0;
-    int         channels   = 0;
-    int         bitDepth   = 0;
-    int64_t     fileSize   = 0;
+    int         trackNumber = 0;
+    int         durationMs  = 0;
+    int         sampleRate  = 0;
+    int         channels    = 0;
+    int         bitDepth    = 0;
+    int64_t     fileSize    = 0;
+    int64_t     fileMtime   = 0;
 };
 
 struct Album {
     std::string name;
     std::string artist;
-    std::string artPath;   // resolved cover image path
+    std::string artPath;
     std::vector<Track> tracks;
+
+    void sortTracks();
 };
 
-// Scan a folder recursively for FLAC files and populate albums.
-// Single-threaded for the skeleton.
 std::vector<Album> scanLibrary(const std::string& rootPath);
 
-// Resolve the best cover art path for a folder.
-// Priority: highest-resolution image named cover/folder/front > any single image.
-// TODO(art-quality): Add pixel-dimension check to pick highest-res when multiple candidates exist.
+struct IncrementalScanResult {
+    std::vector<Album> albums;
+    int filesScanned  = 0;
+    int filesSkipped  = 0;
+    int filesRemoved  = 0;
+};
+
+struct FileCache {
+    int64_t fileSize  = 0;
+    int64_t fileMtime = 0;
+};
+
+IncrementalScanResult scanLibraryIncremental(
+    const std::string& rootPath,
+    const std::map<std::string, FileCache>& existing);
+
+std::vector<Album> scanLibraryParallel(const std::string& rootPath);
+
 std::string resolveArtPath(const std::string& folderPath);
+
+void purgeStaleFiles(std::vector<Album>& albums, int& removedCount);
+
+class FolderWatcher {
+public:
+    using Callback = std::function<void(const std::string& root)>;
+
+    void watchRoot(const std::string& path, Callback cb);
+    void unwatchRoot(const std::string& path);
+    void unwatchAll();
+    ~FolderWatcher() { unwatchAll(); }
+
+private:
+    struct WatchEntry {
+        std::string  root;
+        HANDLE       dirHandle = INVALID_HANDLE_VALUE;
+        HANDLE       stopEvent = nullptr;
+        std::thread  thread;
+        Callback     callback;
+    };
+    std::mutex mu_;
+    std::vector<std::unique_ptr<WatchEntry>> entries_;
+};

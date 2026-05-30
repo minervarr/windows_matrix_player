@@ -11,19 +11,33 @@ add_library(sqlite3 STATIC third_party/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC third_party)
 target_compile_options(sqlite3 PRIVATE /W0)
 
+# ---------- soxr resampler ----------
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_OPENMP OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WITH_LSR_BINDINGS OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/soxr)
+
 # ---------- matrix_player_windows executable ----------
 add_executable(${CMAKE_PROJECT_NAME} WIN32
     src/main.cpp
     src/player_window.cpp
+    src/wasapi_output.cpp
     src/library.cpp
     src/decoder.cpp
     src/db.cpp
     src/artwork.cpp
-    src/art_window.cpp)
+    src/art_window.cpp
+    src/icons.cpp
+    src/eq_profiles.cpp
+    src/eq_manager.cpp
+    src/app.rc)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     src
     third_party
+    third_party/soxr/src
     audio_engine/src/main/cpp
     audio_engine/src/main/cpp/libusb/libusb)
 
@@ -36,14 +50,24 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     UNICODE
     _UNICODE)
 
+# Copy EQ profiles JSON next to the executable
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/eq_profiles.json
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/eq_profiles.json)
+
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     audio_engine_windows
     usb1
     winusb
     setupapi
     sqlite3
+    soxr
     comctl32
     comdlg32
     shell32
     gdiplus
-    ole32)
+    msimg32
+    ole32
+    mmdevapi
+    avrt)

@@ -1,0 +1,71 @@
+#pragma once
+#include "audio_output.h"
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
+
+enum class WasapiMode   { Shared, Exclusive };
+enum class WireFormat   { Float32, Int32, Int24In32, Int16 };
+
+struct WasapiDeviceInfo {
+    std::wstring id;
+    std::wstring name;
+};
+
+class WasapiOutput : public AudioOutput {
+public:
+    static std::vector<WasapiDeviceInfo> enumerateDevices();
+
+    explicit WasapiOutput(std::wstring deviceId = L"",
+                          WasapiMode   mode     = WasapiMode::Shared);
+    ~WasapiOutput() override;
+
+    bool configure(int rate, int channels, int bitDepth, bool strictBitperfect = false) override;
+    bool start()  override;
+    int  writeFloat32(const float* data, int numSamples) override;
+    int  writeFloat32Blocking(const float* data, int numSamples, int timeoutMs = 500) override;
+    void flush()  override;
+    void stop()   override;
+    void close()  override;
+    int  getConfiguredRate()     const override { return rate_; }
+    int  getConfiguredChannels() const override { return channels_; }
+    size_t ringAvailable() const override;
+    bool waitForData(int minSamples, int timeoutMs) override;
+
+private:
+    bool configureShared(int srcChannels);
+    bool configureExclusive(int rate, int channels, bool strictBitperfect);
+    void allocRing();
+    int  writeRing(const float* src, int n);
+    int  readRing(float* dst, int n);
+    void convertToWire(const float* src, BYTE* dst, int n);
+    void renderLoop();
+
+    std::wstring deviceId_;
+    WasapiMode   mode_;
+    WireFormat   wireFormat_ = WireFormat::Float32;
+    int rate_ = 0, channels_ = 0;
+    bool useEvent_ = true;
+    int  periodMs_ = 10;
+
+    IMMDevice*          pDevice_       = nullptr;
+    IAudioClient*       pAudioClient_  = nullptr;
+    IAudioRenderClient* pRenderClient_ = nullptr;
+    HANDLE              hEvent_        = nullptr;
+    HANDLE              hDrainEvent_   = nullptr;
+    UINT32              bufferFrames_  = 0;
+
+    // Lock-free power-of-2 float ring buffer
+    std::vector<float>  ring_;
+    size_t              ringMask_ = 0;
+    std::atomic<size_t> readPos_{0};
+    std::atomic<size_t> writePos_{0};
+
+    std::thread       renderThread_;
+    std::atomic<bool> running_{false};
+    std::atomic<int>  underrunCount_{0};
+};

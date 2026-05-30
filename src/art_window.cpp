@@ -7,6 +7,7 @@ static const wchar_t* ART_CLASS = L"MatrixArtWindow";
 bool ArtWindow::create(HINSTANCE hInst) {
     WNDCLASSEXW wc = {};
     wc.cbSize       = sizeof(wc);
+    wc.style        = CS_DBLCLKS;
     wc.lpfnWndProc  = wndProc;
     wc.hInstance    = hInst;
     wc.hbrBackground= (HBRUSH)GetStockObject(BLACK_BRUSH);

@@ -1,12 +1,13 @@
 #pragma once
 #include "library.h"
 #include <string>
+#include <map>
 
-// SQLite persistence layer.
-// TODO(schema): Add play_history, track_stats (play count, skip count) tables
-//               following the Android player's MatrixPlayerDatabase schema.
-// TODO(parallel-scan): Wire cache invalidation (file size + mtime check) to skip
-//                      re-parsing unchanged files, same as Android's hybrid scan.
+struct EqAssignment {
+    std::string name;
+    std::string source;
+    std::string form;
+};
 
 class Db {
 public:
@@ -18,6 +19,23 @@ public:
 
     void saveAlbums(const std::vector<Album>& albums);
     std::vector<Album> loadAlbums();
+
+    void saveSetting(const std::string& key, const std::string& value);
+    std::string loadSetting(const std::string& key);
+
+    void addMusicRoot(const std::string& path);
+    void removeMusicRoot(const std::string& path);
+    std::vector<std::string> loadMusicRoots();
+
+    std::map<std::string, FileCache> loadFileCache();
+    void removeTracksByPaths(const std::vector<std::string>& paths);
+
+    void saveEqAssignment(const std::string& deviceKey,
+                          const std::string& name,
+                          const std::string& source,
+                          const std::string& form);
+    void clearEqAssignment(const std::string& deviceKey);
+    bool loadEqAssignment(const std::string& deviceKey, EqAssignment& out);
 
     ~Db() { close(); }
 

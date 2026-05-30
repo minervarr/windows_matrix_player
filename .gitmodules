@@ -1,6 +1,6 @@
-[submodule "audio_engine"]
-	path = audio_engine
-	url = https://github.com/minervarr/audio_engine.git
 [submodule "third_party/soxr"]
 	path = third_party/soxr
 	url = https://github.com/chirlu/soxr.git
+[submodule "audio_engine"]
+	path = audio_engine
+	url = https://github.com/minervarr/audio_engine.git

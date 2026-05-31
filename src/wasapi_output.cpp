@@ -1,4 +1,5 @@
 #include "wasapi_output.h"
+#include "log_util.h"
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
 #include <algorithm>
@@ -215,8 +216,8 @@ bool WasapiOutput::configureShared(int srcChannels) {
     if (FAILED(hr)) return false;
 
     allocRing();
-    printf("[WASAPI] Shared: %d Hz %d ch float32, buffer=%u frames\n",
-           rate_, channels_, bufferFrames_);
+    printf("[%s][WASAPI] Shared: %d Hz %d ch float32, buffer=%u frames\n",
+           logTs(), rate_, channels_, bufferFrames_);
     return true;
 }
 
@@ -327,8 +328,8 @@ bool WasapiOutput::configureExclusive(int rate, int channels, bool strictBitperf
 
         pAudioClient_->GetService(__uuidof(IAudioRenderClient), (void**)&pRenderClient_);
         allocRing();
-        printf("[WASAPI] Exclusive: %d Hz %d ch %s, buffer=%u frames, period=%d ms, %s\n",
-               rate_, channels_, wireFormatName(wf), bufferFrames_, periodMs_,
+        printf("[%s][WASAPI] Exclusive: %d Hz %d ch %s, buffer=%u frames, period=%d ms, %s\n",
+               logTs(), rate_, channels_, wireFormatName(wf), bufferFrames_, periodMs_,
                useEvent_ ? "event-driven" : "polling");
         return true;
     }
@@ -350,14 +351,26 @@ bool WasapiOutput::configureExclusive(int rate, int channels, bool strictBitperf
 // ── Ring buffer ────────────────────────────────────────────────────────────────
 
 void WasapiOutput::allocRing() {
-    // 500 ms of float samples, rounded up to power of 2
-    size_t floats = (size_t)(rate_ * channels_) / 2;
+    size_t floats;
+    if (mode_ == WasapiMode::Exclusive) {
+        // Small ring limits gapless audio lag to ~200 ms (16 × hardware period).
+        // Prevents old track's tail bleeding audibly into the next track.
+        floats = (size_t)bufferFrames_ * channels_ * 16;
+        if (floats < 4096) floats = 4096;
+    } else {
+        // Shared: WASAPI hardware buffer is 200 ms; ring ~125 ms stays ahead safely.
+        floats = (size_t)(rate_ * channels_) / 8;
+        if (floats < 4096) floats = 4096;
+    }
     size_t cap = 1;
     while (cap < floats) cap <<= 1;
     ring_.assign(cap, 0.0f);
     ringMask_ = cap - 1;
     readPos_.store(0, std::memory_order_relaxed);
     writePos_.store(0, std::memory_order_relaxed);
+    printf("[%s][WASAPI] ring: %zu floats (%.0f ms)\n",
+           logTs(), cap, (double)cap / (rate_ * channels_) * 1000.0);
+    fflush(stdout);
 }
 
 int WasapiOutput::writeRing(const float* src, int n) {
@@ -412,19 +425,26 @@ bool WasapiOutput::start() {
         }
     }
 
+    printf("[%s][WASAPI] start(): pre-fill=%d ring_avail=%zu\n",
+           logTs(), (int)bufferFrames_ * channels_, ringAvailable());
+    fflush(stdout);
+
     running_.store(true, std::memory_order_release);
+    started_.store(true, std::memory_order_release);
     renderThread_ = std::thread(&WasapiOutput::renderLoop, this);
     hr = pAudioClient_->Start();
     if (FAILED(hr)) {
         running_.store(false);
         if (renderThread_.joinable()) renderThread_.join();
-        printf("[WASAPI] Start failed: 0x%08X\n", (unsigned)hr);
+        printf("[%s][WASAPI] Start failed: 0x%08X\n", logTs(), (unsigned)hr);
         return false;
     }
     return true;
 }
 
 void WasapiOutput::stop() {
+    printf("[%s][WASAPI] stop(): ring_avail=%zu\n", logTs(), ringAvailable());
+    fflush(stdout);
     running_.store(false, std::memory_order_release);
     if (hEvent_) SetEvent(hEvent_);
     if (hDrainEvent_) SetEvent(hDrainEvent_);
@@ -442,6 +462,7 @@ void WasapiOutput::flush() {
 
 void WasapiOutput::close() {
     stop();
+    started_.store(false, std::memory_order_release);
     if (pRenderClient_) { pRenderClient_->Release(); pRenderClient_ = nullptr; }
     if (pAudioClient_)  { pAudioClient_->Release();  pAudioClient_  = nullptr; }
     if (pDevice_)       { pDevice_->Release();        pDevice_       = nullptr; }
@@ -464,11 +485,33 @@ int WasapiOutput::writeFloat32Blocking(const float* data, int numSamples, int ti
         int written = writeRing(data + total, numSamples - total);
         total += written;
         if (total >= numSamples) break;
+        if (started_.load(std::memory_order_acquire) &&
+            !running_.load(std::memory_order_acquire)) break;
         DWORD elapsed = GetTickCount() - start;
-        if ((int)elapsed >= timeoutMs) break;
+        if ((int)elapsed >= timeoutMs) {
+            printf("[%s][WASAPI] writeFloat32Blocking timeout after %d ms (%d/%d written)\n",
+                   logTs(), timeoutMs, total, numSamples);
+            fflush(stdout);
+            break;
+        }
         WaitForSingleObject(hDrainEvent_, 5);
     }
     return total;
+}
+
+int WasapiOutput::writeInt32Blocking(const int32_t* data, int numSamples, int timeoutMs) {
+    std::vector<float> tmp(numSamples);
+    for (int i = 0; i < numSamples; ++i)
+        tmp[i] = (float)((double)data[i] / 2147483648.0);
+    return writeFloat32Blocking(tmp.data(), numSamples, timeoutMs);
+}
+
+int WasapiOutput::getPreBufferSamples() const {
+    if (!bufferFrames_) return 4096;
+    if (mode_ == WasapiMode::Exclusive)
+        return (int)bufferFrames_ * channels_ * 2;   // 2 hardware periods
+    else
+        return (int)bufferFrames_ * channels_ / 2;   // half of shared buffer
 }
 
 size_t WasapiOutput::ringAvailable() const {
@@ -569,7 +612,8 @@ void WasapiOutput::renderLoop() {
         if (got < need) {
             int count = underrunCount_.fetch_add(1, std::memory_order_relaxed) + 1;
             if (count <= 5 || (count % 50) == 0)
-                printf("[WASAPI] underrun #%d: needed %d samples, got %d\n", count, need, got);
+                printf("[%s][WASAPI] underrun #%d: needed %d samples, got %d\n",
+                       logTs(), count, need, got);
         }
     }
 

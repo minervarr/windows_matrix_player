@@ -15,20 +15,23 @@ static const char* COVER_NAMES[] = { "cover", "folder", "front", "albumart", "al
 static const char* COVER_EXTS[]  = { ".jpg", ".jpeg", ".png" };
 
 std::string resolveArtPath(const std::string& folderPath) {
+    fs::path dir = fs::u8path(folderPath);
     // Pass 1: preferred names in priority order
     for (const char* name : COVER_NAMES) {
         for (const char* ext : COVER_EXTS) {
-            std::string candidate = folderPath + "\\" + name + ext;
-            if (fs::exists(candidate)) return candidate;
+            fs::path candidate = dir / (std::string(name) + ext);
+            if (fs::exists(candidate)) return candidate.u8string();
         }
     }
     // Pass 2: pick the first image found (don't require exactly one)
-    for (auto& entry : fs::directory_iterator(folderPath)) {
+    std::error_code ec;
+    for (auto& entry : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
         if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = entry.path().extension().u8string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".jpg" || ext == ".jpeg" || ext == ".png")
-            return entry.path().string();
+            return entry.path().u8string();
     }
     return "";
 }
@@ -84,10 +87,15 @@ static int64_t getFileMtime(const std::string& path) {
 static Track quickParseWAV(const std::string& path) {
     Track t;
     t.filePath = path;
-    t.title = fs::path(path).stem().string();
+    t.title = fs::path(fs::u8path(path)).stem().u8string();
+
+    int wl = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring wpath(wl, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wl);
+    if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
 
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fad)) {
+    if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &fad)) {
         LARGE_INTEGER sz;
         sz.HighPart = fad.nFileSizeHigh;
         sz.LowPart  = fad.nFileSizeLow;
@@ -99,7 +107,7 @@ static Track quickParseWAV(const std::string& path) {
     }
 
     drwav wav;
-    if (drwav_init_file(&wav, path.c_str(), nullptr)) {
+    if (drwav_init_file_w(&wav, wpath.c_str(), nullptr)) {
         t.sampleRate = (int)wav.sampleRate;
         t.channels   = (int)wav.channels;
         t.bitDepth   = (int)wav.bitsPerSample;
@@ -113,10 +121,15 @@ static Track quickParseWAV(const std::string& path) {
 static Track quickParseFLAC(const std::string& path) {
     Track t;
     t.filePath = path;
-    t.title = fs::path(path).stem().string();
+    t.title = fs::path(fs::u8path(path)).stem().u8string();
+
+    int wl = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring wpath(wl, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wl);
+    if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
 
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fad)) {
+    if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &fad)) {
         LARGE_INTEGER sz;
         sz.HighPart = fad.nFileSizeHigh;
         sz.LowPart  = fad.nFileSizeLow;
@@ -128,7 +141,7 @@ static Track quickParseFLAC(const std::string& path) {
     }
 
     VorbisCtx ctx;
-    drflac* flac = drflac_open_file_with_metadata(path.c_str(), onFlacMeta, &ctx, nullptr);
+    drflac* flac = drflac_open_file_with_metadata_w(wpath.c_str(), onFlacMeta, &ctx, nullptr);
     if (flac) {
         t.sampleRate = (int)flac->sampleRate;
         t.channels   = (int)flac->channels;
@@ -149,17 +162,18 @@ static Track quickParseFLAC(const std::string& path) {
 
 std::vector<Album> scanLibrary(const std::string& rootPath) {
     std::vector<Album> albums;
-    if (!fs::exists(rootPath)) return albums;
+    fs::path root = fs::u8path(rootPath);
+    if (!fs::exists(root)) return albums;
 
     std::map<std::string, std::vector<Track>> byFolder;
-    for (auto& entry : fs::recursive_directory_iterator(rootPath,
+    for (auto& entry : fs::recursive_directory_iterator(root,
             fs::directory_options::skip_permission_denied)) {
         if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = entry.path().extension().u8string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-        std::string folder = entry.path().parent_path().string();
-        std::string filePath = entry.path().string();
+        std::string folder = entry.path().parent_path().u8string();
+        std::string filePath = entry.path().u8string();
         if (ext == ".flac")
             byFolder[folder].push_back(quickParseFLAC(filePath));
         else if (ext == ".wav")
@@ -168,7 +182,7 @@ std::vector<Album> scanLibrary(const std::string& rootPath) {
 
     for (auto& [folder, tracks] : byFolder) {
         Album album;
-        album.name   = fs::path(folder).filename().string();
+        album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
         // Derive album artist from tags
@@ -193,25 +207,30 @@ IncrementalScanResult scanLibraryIncremental(
     const std::map<std::string, FileCache>& existing)
 {
     IncrementalScanResult result;
-    if (!fs::exists(rootPath)) return result;
+    fs::path root = fs::u8path(rootPath);
+    if (!fs::exists(root)) return result;
 
     std::map<std::string, std::vector<Track>> byFolder;
 
-    for (auto& entry : fs::recursive_directory_iterator(rootPath,
+    for (auto& entry : fs::recursive_directory_iterator(root,
             fs::directory_options::skip_permission_denied)) {
         if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = entry.path().extension().u8string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext != ".flac" && ext != ".wav") continue;
 
-        std::string filePath = entry.path().string();
-        std::string folder   = entry.path().parent_path().string();
+        std::string filePath = entry.path().u8string();
+        std::string folder   = entry.path().parent_path().u8string();
 
         // Check if file is unchanged
         auto it = existing.find(filePath);
         if (it != existing.end()) {
+            int wl2 = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0);
+            std::wstring wfp(wl2, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, wfp.data(), wl2);
+            if (!wfp.empty() && wfp.back() == L'\0') wfp.pop_back();
             WIN32_FILE_ATTRIBUTE_DATA fad;
-            if (GetFileAttributesExA(filePath.c_str(), GetFileExInfoStandard, &fad)) {
+            if (GetFileAttributesExW(wfp.c_str(), GetFileExInfoStandard, &fad)) {
                 LARGE_INTEGER sz, mt;
                 sz.HighPart = fad.nFileSizeHigh; sz.LowPart = fad.nFileSizeLow;
                 mt.HighPart = fad.ftLastWriteTime.dwHighDateTime;
@@ -232,7 +251,7 @@ IncrementalScanResult scanLibraryIncremental(
 
     for (auto& [folder, tracks] : byFolder) {
         Album album;
-        album.name   = fs::path(folder).filename().string();
+        album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
         for (auto& t : album.tracks) {
@@ -252,17 +271,18 @@ IncrementalScanResult scanLibraryIncremental(
 // ── Parallel scan ────────────────────────────────────────────────────────────
 
 std::vector<Album> scanLibraryParallel(const std::string& rootPath) {
-    if (!fs::exists(rootPath)) return {};
+    fs::path root = fs::u8path(rootPath);
+    if (!fs::exists(root)) return {};
 
     // Collect all audio file paths first
     std::vector<std::pair<std::string, std::string>> files; // (path, ext)
-    for (auto& entry : fs::recursive_directory_iterator(rootPath,
+    for (auto& entry : fs::recursive_directory_iterator(root,
             fs::directory_options::skip_permission_denied)) {
         if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = entry.path().extension().u8string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".flac" || ext == ".wav")
-            files.emplace_back(entry.path().string(), ext);
+            files.emplace_back(entry.path().u8string(), ext);
     }
 
     // Parse in parallel using hardware concurrency
@@ -294,7 +314,7 @@ std::vector<Album> scanLibraryParallel(const std::string& rootPath) {
     for (auto& f : futures) {
         auto tracks = f.get();
         for (auto& t : tracks) {
-            std::string folder = fs::path(t.filePath).parent_path().string();
+            std::string folder = fs::u8path(t.filePath).parent_path().u8string();
             byFolder[folder].push_back(std::move(t));
         }
     }
@@ -302,7 +322,7 @@ std::vector<Album> scanLibraryParallel(const std::string& rootPath) {
     std::vector<Album> albums;
     for (auto& [folder, tracks] : byFolder) {
         Album album;
-        album.name   = fs::path(folder).filename().string();
+        album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
         for (auto& t : album.tracks) {
@@ -326,7 +346,7 @@ void purgeStaleFiles(std::vector<Album>& albums, int& removedCount) {
     for (auto& album : albums) {
         auto it = std::remove_if(album.tracks.begin(), album.tracks.end(),
             [&](const Track& t) {
-                if (!fs::exists(t.filePath)) { removedCount++; return true; }
+                if (!fs::exists(fs::u8path(t.filePath))) { removedCount++; return true; }
                 return false;
             });
         album.tracks.erase(it, album.tracks.end());
@@ -352,7 +372,10 @@ void FolderWatcher::watchRoot(const std::string& path, Callback cb) {
     entry->callback = cb;
     entry->stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
-    std::wstring wpath(path.begin(), path.end());
+    int wl3 = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring wpath(wl3, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wl3);
+    if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
     entry->dirHandle = CreateFileW(
         wpath.c_str(),
         FILE_LIST_DIRECTORY,

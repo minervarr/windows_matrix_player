@@ -25,19 +25,20 @@
 #define ID_BTN_PLAY     104
 
 // Theme colors
-static constexpr COLORREF CLR_BG_MAIN       = RGB(0, 0, 0);
-static constexpr COLORREF CLR_BG_SIDEBAR    = RGB(18, 18, 18);
-static constexpr COLORREF CLR_BG_TRANSPORT  = RGB(26, 26, 26);
-static constexpr COLORREF CLR_BG_TRACKPANEL = RGB(14, 14, 14);
-static constexpr COLORREF CLR_TEXT_PRIMARY   = RGB(230, 230, 230);
-static constexpr COLORREF CLR_TEXT_SECONDARY = RGB(150, 150, 150);
-static constexpr COLORREF CLR_TEXT_DIM       = RGB(100, 100, 100);
-static constexpr COLORREF CLR_ACCENT         = RGB(0, 200, 83);
-static constexpr COLORREF CLR_HOVER          = RGB(40, 40, 40);
-static constexpr COLORREF CLR_SEPARATOR      = RGB(40, 40, 40);
-static constexpr COLORREF CLR_SEEKBAR_TRACK  = RGB(60, 60, 60);
-static constexpr COLORREF CLR_SEEKBAR_FILL   = RGB(0, 200, 83);
-static constexpr COLORREF CLR_TILE_PLACEHOLDER = RGB(30, 30, 30);
+static constexpr COLORREF CLR_BG_MAIN        = RGB(10, 10, 10);
+static constexpr COLORREF CLR_BG_SIDEBAR     = RGB(18, 18, 18);
+static constexpr COLORREF CLR_BG_TRANSPORT   = RGB(22, 22, 22);
+static constexpr COLORREF CLR_BG_TRACKPANEL  = RGB(14, 14, 14);
+static constexpr COLORREF CLR_TEXT_PRIMARY    = RGB(242, 242, 242);
+static constexpr COLORREF CLR_TEXT_SECONDARY  = RGB(128, 128, 128);
+static constexpr COLORREF CLR_TEXT_DIM        = RGB(80, 80, 80);
+static constexpr COLORREF CLR_ACCENT          = RGB(0, 200, 83);
+static constexpr COLORREF CLR_HOVER           = RGB(38, 38, 38);
+static constexpr COLORREF CLR_SEPARATOR       = RGB(36, 36, 36);
+static constexpr COLORREF CLR_SEEKBAR_TRACK   = RGB(55, 55, 55);
+static constexpr COLORREF CLR_SEEKBAR_FILL    = RGB(0, 200, 83);
+static constexpr COLORREF CLR_TILE_PLACEHOLDER = RGB(28, 28, 28);
+static constexpr COLORREF CLR_TEXT_ALBUM_TITLE = RGB(255, 255, 255);
 
 class PlayerWindow {
 public:
@@ -110,6 +111,7 @@ private:
     // Fonts
     HFONT hFontBrand_          = nullptr;
     HFONT hFontSidebar_        = nullptr;
+    HFONT hFontSidebarActive_  = nullptr;
     HFONT hFontAlbumTitle_     = nullptr;
     HFONT hFontArtist_         = nullptr;
     HFONT hFontTrackRow_       = nullptr;

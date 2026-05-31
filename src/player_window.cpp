@@ -1,4 +1,5 @@
 #include "player_window.h"
+#include "log_util.h"
 #include "artwork.h"
 #include "icons.h"
 #include <windowsx.h>
@@ -22,6 +23,15 @@ static int pickOutputRate(int inRate, const std::vector<int>& supported) {
     for (int r : supported)
         if (r > inRate) return r;
     return supported.empty() ? 48000 : supported.back();
+}
+
+static std::wstring utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    if (!w.empty() && w.back() == L'\0') w.pop_back();
+    return w;
 }
 
 static HFONT createFont(int size, int weight = FW_NORMAL) {
@@ -83,15 +93,16 @@ bool PlayerWindow::create(HINSTANCE hInst) {
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, (LONG_PTR)this);
 
     // Create fonts
-    hFontBrand_           = createFont(16, FW_SEMIBOLD);
+    hFontBrand_           = createFont(13, FW_BOLD);
     hFontSidebar_         = createFont(13);
-    hFontAlbumTitle_      = createFont(12);
+    hFontSidebarActive_   = createFont(13, FW_SEMIBOLD);
+    hFontAlbumTitle_      = createFont(13, FW_SEMIBOLD);
     hFontArtist_          = createFont(11);
     hFontTrackRow_        = createFont(13);
     hFontTrackNumber_     = createFont(12);
-    hFontTransportTitle_  = createFont(13, FW_SEMIBOLD);
-    hFontTransportArtist_ = createFont(11);
-    hFontTime_            = createFont(11);
+    hFontTransportTitle_  = createFont(14, FW_SEMIBOLD);
+    hFontTransportArtist_ = createFont(12);
+    hFontTime_            = createFont(12);
     hFontNowPlaying_      = createFont(15, FW_SEMIBOLD);
     hFontSettingsItem_    = createFont(14);
     hFontPlaceholder_     = createFont(32);
@@ -122,7 +133,10 @@ bool PlayerWindow::create(HINSTANCE hInst) {
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring dbPathW = exePath;
     dbPathW = dbPathW.substr(0, dbPathW.rfind(L'\\') + 1) + L"matrix_player.db";
-    std::string dbPath(dbPathW.begin(), dbPathW.end());
+    int dbLen = WideCharToMultiByte(CP_UTF8, 0, dbPathW.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string dbPath(dbLen, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, dbPathW.c_str(), -1, dbPath.data(), dbLen, nullptr, nullptr);
+    if (!dbPath.empty() && dbPath.back() == '\0') dbPath.pop_back();
     db_.open(dbPath);
 
     // Restore library from DB
@@ -146,7 +160,10 @@ bool PlayerWindow::create(HINSTANCE hInst) {
     {
         std::wstring eqPathW = exePath;
         eqPathW = eqPathW.substr(0, eqPathW.rfind(L'\\') + 1) + L"eq_profiles.json";
-        std::string eqPath(eqPathW.begin(), eqPathW.end());
+        int eqLen = WideCharToMultiByte(CP_UTF8, 0, eqPathW.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string eqPath(eqLen, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, eqPathW.c_str(), -1, eqPath.data(), eqLen, nullptr, nullptr);
+        if (!eqPath.empty() && eqPath.back() == '\0') eqPath.pop_back();
         eqProfiles_.load(eqPath);
     }
 
@@ -161,7 +178,7 @@ bool PlayerWindow::create(HINSTANCE hInst) {
     wasapiMode_ = (db_.loadSetting("wasapi_mode") == "exclusive")
                   ? WasapiMode::Exclusive : WasapiMode::Shared;
     auto devIdUtf8 = db_.loadSetting("wasapi_device_id");
-    wasapiDeviceId_ = std::wstring(devIdUtf8.begin(), devIdUtf8.end());
+    wasapiDeviceId_ = utf8ToWide(devIdUtf8);
 
     if (useWasapi_) {
         output_ = std::make_unique<WasapiOutput>(wasapiDeviceId_, wasapiMode_);
@@ -328,9 +345,9 @@ void PlayerWindow::paintSidebar(HDC hdc) {
 
     // Brand
     SetBkMode(hdc, TRANSPARENT);
-    RECT brandText = { 16, 14, rcSidebar_.right - 8, 44 };
+    RECT brandText = { 16, 12, rcSidebar_.right - 8, 42 };
     HFONT oldF = (HFONT)SelectObject(hdc, hFontBrand_);
-    SetTextColor(hdc, CLR_TEXT_PRIMARY);
+    SetTextColor(hdc, CLR_ACCENT);
     DrawTextW(hdc, L"MATRIX PLAYER", -1, &brandText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
     // Nav items
@@ -341,19 +358,22 @@ void PlayerWindow::paintSidebar(HDC hdc) {
     };
 
     for (auto& item : items) {
-        if (hoverSidebarItem_ == item.idx && activeNavItem_ != item.idx)
-            FillRect(hdc, &item.rc, hbrHover_);
+        bool active = (activeNavItem_ == item.idx);
+        bool hovered = (hoverSidebarItem_ == item.idx && !active);
 
-        if (activeNavItem_ == item.idx) {
-            RECT accent = { item.rc.left, item.rc.top + 4, item.rc.left + 3, item.rc.bottom - 4 };
+        if (hovered) FillRect(hdc, &item.rc, hbrHover_);
+
+        if (active) {
+            RECT accent = { item.rc.left, item.rc.top + 6, item.rc.left + 2, item.rc.bottom - 6 };
             fillRect(hdc, accent, CLR_ACCENT);
+            SelectObject(hdc, hFontSidebarActive_);
             SetTextColor(hdc, CLR_TEXT_PRIMARY);
         } else {
-            SetTextColor(hdc, CLR_TEXT_DIM);
+            SelectObject(hdc, hFontSidebar_);
+            SetTextColor(hdc, CLR_TEXT_SECONDARY);
         }
 
         RECT textRc = { item.rc.left + 20, item.rc.top, item.rc.right, item.rc.bottom };
-        SelectObject(hdc, hFontSidebar_);
         DrawTextW(hdc, item.label, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     SelectObject(hdc, oldF);
@@ -396,7 +416,7 @@ void PlayerWindow::paintGrid(HDC hdc) {
 
             // Hover highlight
             if (hoverAlbumIdx_ == idx) {
-                RECT hoverRc = { x - 6, y - 6, x + gridArtSize_ + 6, y + gridArtSize_ + 34 };
+                RECT hoverRc = { x - 6, y - 6, x + gridArtSize_ + 6, y + gridArtSize_ + 42 };
                 FillRect(hdc, &hoverRc, hbrHover_);
             }
 
@@ -430,15 +450,15 @@ void PlayerWindow::paintGrid(HDC hdc) {
             }
 
             // Album name
-            RECT nameRc = { x, y + gridArtSize_ + 4, x + gridArtSize_, y + gridArtSize_ + 20 };
-            std::wstring nameW(albums_[idx].name.begin(), albums_[idx].name.end());
+            RECT nameRc = { x, y + gridArtSize_ + 8, x + gridArtSize_, y + gridArtSize_ + 23 };
+            std::wstring nameW(utf8ToWide(albums_[idx].name));
             HFONT oldF = (HFONT)SelectObject(hdc, hFontAlbumTitle_);
-            SetTextColor(hdc, CLR_TEXT_PRIMARY);
+            SetTextColor(hdc, CLR_TEXT_ALBUM_TITLE);
             DrawTextW(hdc, nameW.c_str(), -1, &nameRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
             // Artist name
-            RECT artistRc = { x, y + gridArtSize_ + 20, x + gridArtSize_, y + gridArtSize_ + 34 };
-            std::wstring artistW(albums_[idx].artist.begin(), albums_[idx].artist.end());
+            RECT artistRc = { x, y + gridArtSize_ + 25, x + gridArtSize_, y + gridArtSize_ + 38 };
+            std::wstring artistW(utf8ToWide(albums_[idx].artist));
             SelectObject(hdc, hFontArtist_);
             SetTextColor(hdc, CLR_TEXT_SECONDARY);
             DrawTextW(hdc, artistW.c_str(), -1, &artistRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -508,7 +528,7 @@ void PlayerWindow::paintTrackPanel(HDC hdc) {
 
     // Album name
     RECT nameRc = { rcTrackPanel_.left + 12, y, rcTrackPanel_.right - 12, y + 22 };
-    std::wstring nameW(album.name.begin(), album.name.end());
+    std::wstring nameW(utf8ToWide(album.name));
     HFONT oldF = (HFONT)SelectObject(hdc, hFontNowPlaying_);
     SetTextColor(hdc, CLR_TEXT_PRIMARY);
     DrawTextW(hdc, nameW.c_str(), -1, &nameRc, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -516,7 +536,7 @@ void PlayerWindow::paintTrackPanel(HDC hdc) {
 
     // Artist
     RECT artistRc = { rcTrackPanel_.left + 12, y, rcTrackPanel_.right - 12, y + 18 };
-    std::wstring artistW(album.artist.begin(), album.artist.end());
+    std::wstring artistW(utf8ToWide(album.artist));
     SelectObject(hdc, hFontArtist_);
     SetTextColor(hdc, CLR_TEXT_SECONDARY);
     DrawTextW(hdc, artistW.c_str(), -1, &artistRc, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -554,7 +574,7 @@ void PlayerWindow::paintTrackPanel(HDC hdc) {
         DrawTextW(hdc, numBuf, -1, &numRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
         // Title
-        std::wstring titleW(album.tracks[i].title.begin(), album.tracks[i].title.end());
+        std::wstring titleW(utf8ToWide(album.tracks[i].title));
         RECT titleRc = { rcTrackPanel_.left + 50, rowY, rcTrackPanel_.right - 55, rowY + trackRowHeight_ };
         SelectObject(hdc, hFontTrackRow_);
         SetTextColor(hdc, isPlaying ? CLR_ACCENT : CLR_TEXT_PRIMARY);
@@ -601,13 +621,13 @@ void PlayerWindow::paintTransport(HDC hdc) {
     HFONT oldF = (HFONT)SelectObject(hdc, hFontTransportTitle_);
     SetTextColor(hdc, CLR_TEXT_PRIMARY);
     RECT titleRc = { rcTransportInfo_.left, rcTransportInfo_.top,
-                     rcTransportInfo_.right, rcTransportInfo_.top + 20 };
+                     rcTransportInfo_.right, rcTransportInfo_.top + 22 };
     DrawTextW(hdc, currentTitleW_.empty() ? L"No track" : currentTitleW_.c_str(),
               -1, &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SelectObject(hdc, hFontTransportArtist_);
     SetTextColor(hdc, CLR_TEXT_SECONDARY);
-    RECT artRc = { rcTransportInfo_.left, rcTransportInfo_.top + 22,
+    RECT artRc = { rcTransportInfo_.left, rcTransportInfo_.top + 24,
                    rcTransportInfo_.right, rcTransportInfo_.bottom };
     DrawTextW(hdc, currentArtistW_.c_str(), -1, &artRc,
               DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -901,6 +921,11 @@ void PlayerWindow::onLButtonDown(int x, int y) {
     // Track panel track click
     if (trackPanelOpen_ && PtInRect(&rcTrackPanel_, pt)) {
         int track = trackPanelHitTest(x, y);
+        printf("[Click] Track panel click (%d,%d): hit=%d, trackHeaderHeight=%d, tracks=%d\n",
+               x, y, track, trackHeaderHeight_,
+               (selectedAlbumIdx_ >= 0 && selectedAlbumIdx_ < (int)albums_.size())
+                   ? (int)albums_[selectedAlbumIdx_].tracks.size() : -1);
+        fflush(stdout);
         if (track >= 0) {
             currentAlbum_ = selectedAlbumIdx_;
             currentTrack_ = track;
@@ -1074,8 +1099,7 @@ static LRESULT CALLBACK manageFoldersDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPA
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
             8, 8, 484, 200, hwnd, (HMENU)ID_DLG_LIST, hi, nullptr);
         for (auto& r : ctx->db->loadMusicRoots()) {
-            std::wstring ws(r.begin(), r.end());
-            SendMessageW(ctx->list, LB_ADDSTRING, 0, (LPARAM)ws.c_str());
+            SendMessageW(ctx->list, LB_ADDSTRING, 0, (LPARAM)utf8ToWide(r).c_str());
         }
         CreateWindowExW(0, L"BUTTON", L"Remove Selected",
             WS_CHILD | WS_VISIBLE, 8, 216, 150, 28, hwnd, (HMENU)ID_DLG_REMOVE, hi, nullptr);
@@ -1089,7 +1113,10 @@ static LRESULT CALLBACK manageFoldersDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPA
             if (sel == LB_ERR) break;
             wchar_t buf[MAX_PATH] = {};
             SendMessageW(ctx->list, LB_GETTEXT, sel, (LPARAM)buf);
-            std::string path(buf, buf + wcslen(buf));
+            int pLen = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+            std::string path(pLen, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, buf, -1, path.data(), pLen, nullptr, nullptr);
+            if (!path.empty() && path.back() == '\0') path.pop_back();
             ctx->db->removeMusicRoot(path);
             SendMessageW(ctx->list, LB_DELETESTRING, sel, 0);
             ctx->changed = true;
@@ -1243,7 +1270,7 @@ static LRESULT CALLBACK audioSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPA
         // Populate USB device list
         ctx->usbDevices = UsbAudioDriver::enumerateUsbAudioDevices();
         for (auto& ud : ctx->usbDevices) {
-            std::wstring wname(ud.name.begin(), ud.name.end());
+            std::wstring wname(utf8ToWide(ud.name));
             SendMessageW(ctx->cmbUsbDevice, CB_ADDSTRING, 0, (LPARAM)wname.c_str());
         }
         auto savedVid = ctx->db->loadSetting("usb_vid");
@@ -1274,7 +1301,10 @@ static LRESULT CALLBACK audioSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPA
         auto savedId = ctx->db->loadSetting("wasapi_device_id");
         int devSel = 0;
         for (int i = 0; i < (int)ctx->devices.size(); i++) {
-            std::string id(ctx->devices[i].id.begin(), ctx->devices[i].id.end());
+            int idLen = WideCharToMultiByte(CP_UTF8, 0, ctx->devices[i].id.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            std::string id(idLen, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, ctx->devices[i].id.c_str(), -1, id.data(), idLen, nullptr, nullptr);
+            if (!id.empty() && id.back() == '\0') id.pop_back();
             if (id == savedId) { devSel = i + 1; break; }
         }
         SendMessageW(ctx->cmbDevice, CB_SETCURSEL, devSel, 0);
@@ -1299,7 +1329,10 @@ static LRESULT CALLBACK audioSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPA
                 std::string devId;
                 if (sel > 0 && sel <= (int)ctx->devices.size()) {
                     auto& ws = ctx->devices[sel - 1].id;
-                    devId = std::string(ws.begin(), ws.end());
+                    int dLen = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                    devId.assign(dLen, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, devId.data(), dLen, nullptr, nullptr);
+                    if (!devId.empty() && devId.back() == '\0') devId.pop_back();
                 }
                 ctx->db->saveSetting("wasapi_device_id", devId);
                 bool excl = (SendMessageW(ctx->rdoExclusive, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -1380,7 +1413,7 @@ void PlayerWindow::onAudioSettings() {
     wasapiMode_ = (db_.loadSetting("wasapi_mode") == "exclusive")
                   ? WasapiMode::Exclusive : WasapiMode::Shared;
     auto devIdUtf8 = db_.loadSetting("wasapi_device_id");
-    wasapiDeviceId_ = std::wstring(devIdUtf8.begin(), devIdUtf8.end());
+    wasapiDeviceId_ = utf8ToWide(devIdUtf8);
 
     if (useWasapi_) {
         output_ = std::make_unique<WasapiOutput>(wasapiDeviceId_, wasapiMode_);
@@ -1452,7 +1485,7 @@ static void eqFilterList(EqSettingsDlgCtx* ctx) {
 
     for (int i = 0; i < (int)ctx->allProfiles->size(); i++) {
         auto& p = (*ctx->allProfiles)[i];
-        std::wstring nameW(p.name.begin(), p.name.end());
+        std::wstring nameW(utf8ToWide(p.name));
         std::wstring nameLower = nameW;
         for (auto& c : nameLower) c = towlower(c);
 
@@ -1461,7 +1494,7 @@ static void eqFilterList(EqSettingsDlgCtx* ctx) {
 
         std::wstring label = nameW;
         if (!p.form.empty()) {
-            std::wstring formW(p.form.begin(), p.form.end());
+            std::wstring formW(utf8ToWide(p.form));
             label += L"  (" + formW + L")";
         }
         SendMessageW(ctx->listProfiles, LB_ADDSTRING, 0, (LPARAM)label.c_str());
@@ -1480,8 +1513,8 @@ static void eqUpdateSelection(EqSettingsDlgCtx* ctx) {
     }
     int idx = ctx->filteredIndices[sel];
     auto& p = (*ctx->allProfiles)[idx];
-    std::wstring nameW(p.name.begin(), p.name.end());
-    std::wstring formW(p.form.begin(), p.form.end());
+    std::wstring nameW(utf8ToWide(p.name));
+    std::wstring formW(utf8ToWide(p.form));
     std::wstring selText = nameW;
     if (!formW.empty()) selText += L"  (" + formW + L")";
     SetWindowTextW(ctx->lblSelected, selText.c_str());
@@ -1501,7 +1534,7 @@ static LRESULT CALLBACK eqSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         HINSTANCE hi = ((CREATESTRUCTW*)lp)->hInstance;
         int x = 12, y = 10;
 
-        std::wstring devKeyW(ctx->deviceKey.begin(), ctx->deviceKey.end());
+        std::wstring devKeyW(utf8ToWide(ctx->deviceKey));
         std::wstring devLabel = L"Current device: " + devKeyW;
         ctx->lblDevice = CreateWindowExW(0, L"STATIC", devLabel.c_str(),
             WS_CHILD | WS_VISIBLE, x, y, 460, 18, hwnd, nullptr, hi, nullptr);
@@ -1519,7 +1552,7 @@ static LRESULT CALLBACK eqSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         std::wstring currentAssign = L"No EQ assigned";
         if (ctx->db->loadEqAssignment(ctx->deviceKey, assign) ||
             ctx->db->loadEqAssignment("global", assign)) {
-            std::wstring n(assign.name.begin(), assign.name.end());
+            std::wstring n(utf8ToWide(assign.name));
             currentAssign = L"Current EQ: " + n;
         }
         CreateWindowExW(0, L"STATIC", currentAssign.c_str(),
@@ -1575,7 +1608,7 @@ static LRESULT CALLBACK eqSettingsDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
                     ctx->eqManager->applyProfile(profile, ctx->currentSampleRate, ctx->currentChannels);
             }
             ctx->changed = true;
-            std::wstring nameW(p.name.begin(), p.name.end());
+            std::wstring nameW(utf8ToWide(p.name));
             if (ctx->bitperfectActive) {
                 std::wstring msg = L"Saved: " + nameW + L"\nWill be active when DSP mode is enabled.";
                 MessageBoxW(hwnd, msg.c_str(), L"EQ Profile Saved (Bitperfect)", MB_OK | MB_ICONINFORMATION);
@@ -1671,7 +1704,10 @@ void PlayerWindow::onAddFolder() {
     SHGetPathFromIDListW(pidl, path);
     CoTaskMemFree(pidl);
 
-    std::string root(path, path + wcslen(path));
+    int rLen = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+    std::string root(rLen, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, root.data(), rLen, nullptr, nullptr);
+    if (!root.empty() && root.back() == '\0') root.pop_back();
     db_.addMusicRoot(root);
 
     HWND h = hwnd_;
@@ -1729,6 +1765,9 @@ void PlayerWindow::applyDeviceEq(int sampleRate, int channels) {
 void PlayerWindow::onPlay() {
     if (currentAlbum_ < 0 || currentTrack_ < 0) return;
     const Track& t = albums_[currentAlbum_].tracks[currentTrack_];
+    printf("[Play] album=%d track=%d path='%s'\n",
+           currentAlbum_, currentTrack_, t.filePath.c_str());
+    fflush(stdout);
 
     {
         std::lock_guard<std::mutex> lk(gaplessMu_);
@@ -1746,8 +1785,8 @@ void PlayerWindow::onPlay() {
     if (!decoder_.open(t.filePath)) return;
 
     // Update UI state
-    currentTitleW_ = std::wstring(t.title.begin(), t.title.end());
-    currentArtistW_ = std::wstring(t.artist.begin(), t.artist.end());
+    currentTitleW_ = utf8ToWide(t.title);
+    currentArtistW_ = utf8ToWide(t.artist);
 
     int durationSec = t.durationMs > 0 ? t.durationMs / 1000
                     : active_->totalFrames() / (active_->sampleRate() ? active_->sampleRate() : 44100);
@@ -1878,18 +1917,23 @@ void PlayerWindow::onPlay() {
     // Both Bit-Perfect and Reference EQ decode via the lossless int32 path.
     active_->startAsyncInt32(callbackI32);
 
-    int preBufferSamples = (capturedOutSr / 4) * capturedDacCh;
+    int preBufferSamples = output_->getPreBufferSamples();
     if (!output_->waitForData(preBufferSamples, 2000))
         printf("[Audio] WARNING: pre-buffer incomplete (%zu / %d samples)\n",
                output_->ringAvailable(), preBufferSamples);
 
-    if (!output_->start()) {
+    bool startOk = output_->start();
+    printf("[onPlay] output_->start() returned %s\n", startOk ? "true" : "false");
+    fflush(stdout);
+    if (!startOk) {
         MessageBoxW(hwnd_, L"Audio output failed to start.\nCheck Audio Settings.",
             L"Audio start failed", MB_OK | MB_ICONERROR);
         active_->stop();
         isPlaying_ = false;
         return;
     }
+    printf("[onPlay] USB streaming started, ring=%zu\n", output_->ringAvailable());
+    fflush(stdout);
 
     startGaplessCoordinator(callbackI32, capturedOutSr, capturedDacCh);
     SetTimer(hwnd_, TIMER_SEEK_UPDATE, 250, nullptr);
@@ -1941,15 +1985,32 @@ void PlayerWindow::startGaplessCoordinator(PcmS32Callback cbI32, int outSr, int 
             gaplessSignal_ = false;
             lk.unlock();
 
+            printf("[%s][Gapless] EOF fired: playedFrames=%lld ring_avail=%zu\n",
+                   logTs(),
+                   (long long)playedFrames_.load(std::memory_order_relaxed),
+                   output_->ringAvailable());
+            fflush(stdout);
+
             if (nextAlbum_ < 0) break;
 
             Decoder* incoming = (active_ == &decoder_) ? &nextDecoder_ : &decoder_;
-            bool seamless = (incoming->sampleRate() == outSr &&
-                             incoming->channels()    == dacCh);
-            // In bit-perfect mode a bit-depth change must re-negotiate the DAC
-            // format, so it can't be a seamless in-stream swap.
+            // Compare incoming file properties against the *current* decoder, not the
+            // WASAPI output rate. In shared mode outSr is the OS mix rate (often
+            // 48000 Hz) which never matches a 44100 Hz file, causing every transition
+            // to be incorrectly non-seamless. The real question is: does the next
+            // track need a WASAPI reconfigure? Only when bit-depth changes (bitperfect)
+            // or when sample rate / channel count change.
+            bool rateMatch = (incoming->sampleRate() == active_->sampleRate() &&
+                              incoming->channels()    == active_->channels());
+            bool seamless  = rateMatch;
             if (bitperfect && incoming->bitsPerSample() != active_->bitsPerSample())
                 seamless = false;
+            printf("[%s][Gapless] incoming sr=%d ch=%d bits=%d | active sr=%d ch=%d bits=%d"
+                   " | outSr=%d dacCh=%d | seamless=%s\n", logTs(),
+                   incoming->sampleRate(), incoming->channels(), incoming->bitsPerSample(),
+                   active_->sampleRate(), active_->channels(), active_->bitsPerSample(),
+                   outSr, dacCh, seamless ? "true" : "false");
+            fflush(stdout);
 
             active_ = incoming;
             currentAlbum_ = nextAlbum_;
@@ -2151,8 +2212,8 @@ LRESULT PlayerWindow::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
         if (album >= 0 && album < (int)albums_.size() &&
             track >= 0 && track < (int)albums_[album].tracks.size()) {
             const auto& nt = albums_[album].tracks[track];
-            currentTitleW_ = std::wstring(nt.title.begin(), nt.title.end());
-            currentArtistW_ = std::wstring(nt.artist.begin(), nt.artist.end());
+            currentTitleW_ = utf8ToWide(nt.title);
+            currentArtistW_ = utf8ToWide(nt.artist);
             playedFrames_.store(0);
             seekTotalMs_ = nt.durationMs > 0 ? nt.durationMs : 0;
             seekPosMs_ = 0;
@@ -2216,8 +2277,8 @@ LRESULT PlayerWindow::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
         usbDriver_.close();
 
         // Clean up fonts
-        HFONT* fonts[] = { &hFontBrand_, &hFontSidebar_, &hFontAlbumTitle_, &hFontArtist_,
-                           &hFontTrackRow_, &hFontTrackNumber_, &hFontTransportTitle_,
+        HFONT* fonts[] = { &hFontBrand_, &hFontSidebar_, &hFontSidebarActive_, &hFontAlbumTitle_,
+                           &hFontArtist_, &hFontTrackRow_, &hFontTrackNumber_, &hFontTransportTitle_,
                            &hFontTransportArtist_, &hFontTime_, &hFontNowPlaying_,
                            &hFontSettingsItem_, &hFontPlaceholder_ };
         for (auto* f : fonts) { if (*f) DeleteObject(*f); *f = nullptr; }

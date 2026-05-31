@@ -36,6 +36,7 @@ public:
     virtual int  getConfiguredChannels() const = 0;
     virtual size_t ringAvailable() const { return 0; }
     virtual bool waitForData(int minSamples, int timeoutMs) { (void)minSamples; (void)timeoutMs; return true; }
+    virtual int  getPreBufferSamples() const { return 4096; }
 };
 
 // Thin adapter so UsbAudioDriver satisfies AudioOutput.

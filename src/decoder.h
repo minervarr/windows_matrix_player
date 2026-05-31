@@ -27,7 +27,7 @@ public:
 
     int  sampleRate()    const { return sampleRate_; }
     int  channels()      const { return channels_; }
-    int  totalFrames()   const { return totalFrames_; }
+    int64_t totalFrames()   const { return totalFrames_; }
     int  bitsPerSample() const { return bitsPerSample_; }
 
     // Start decode loop on a background thread, calling cb with PCM chunks.
@@ -54,7 +54,7 @@ private:
 
     int sampleRate_    = 0;
     int channels_      = 0;
-    int totalFrames_   = 0;
+    int64_t totalFrames_   = 0;
     int bitsPerSample_ = 0;
 
     std::thread              thread_;

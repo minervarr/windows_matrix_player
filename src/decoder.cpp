@@ -35,23 +35,42 @@ static std::string fileExt(const std::string& path) {
     return ext;
 }
 
+static std::wstring utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    if (!w.empty() && w.back() == L'\0') w.pop_back();
+    return w;
+}
+
 bool Decoder::open(const std::string& path) {
     close();
+    seekTarget_.store(-1, std::memory_order_relaxed);
     std::string ext = fileExt(path);
+    std::wstring wpath = utf8ToWide(path);
 
     if (ext == ".wav") {
-        if (!drwav_init_file(&impl_->wav, path.c_str(), nullptr)) return false;
+        if (!drwav_init_file_w(&impl_->wav, wpath.c_str(), nullptr)) {
+            printf("[Decoder] drwav_init_file_w FAILED: '%s'\n", path.c_str());
+            fflush(stdout);
+            return false;
+        }
         impl_->wavOpen = true;
         sampleRate_    = (int)impl_->wav.sampleRate;
         channels_      = (int)impl_->wav.channels;
-        totalFrames_   = (int)impl_->wav.totalPCMFrameCount;
+        totalFrames_   = (int64_t)impl_->wav.totalPCMFrameCount;
         bitsPerSample_ = (int)impl_->wav.bitsPerSample;
     } else {
-        impl_->flac = drflac_open_file(path.c_str(), nullptr);
-        if (!impl_->flac) return false;
+        impl_->flac = drflac_open_file_w(wpath.c_str(), nullptr);
+        if (!impl_->flac) {
+            printf("[Decoder] drflac_open_file_w FAILED: '%s'\n", path.c_str());
+            fflush(stdout);
+            return false;
+        }
         sampleRate_    = (int)impl_->flac->sampleRate;
         channels_      = (int)impl_->flac->channels;
-        totalFrames_   = (int)impl_->flac->totalPCMFrameCount;
+        totalFrames_   = (int64_t)impl_->flac->totalPCMFrameCount;
         bitsPerSample_ = (int)impl_->flac->bitsPerSample;
     }
     return true;

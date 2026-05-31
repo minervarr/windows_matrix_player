@@ -74,6 +74,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     timeBeginPeriod(1);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+
     if (getenv("MATRIX_ISO_TEST")) {
         int rc = runIsoSelfTest();
         CoUninitialize();

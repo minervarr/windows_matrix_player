@@ -58,6 +58,12 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
         ${CMAKE_SOURCE_DIR}/eq_profiles.json
         $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/eq_profiles.json)
 
+# Copy CMU Serif fonts next to the executable
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/fonts
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/fonts)
+
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     audio_engine_windows
     usb1
@@ -73,3 +79,15 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     ole32
     mmdevapi
     avrt)
+
+# ---------- matrix_ab_test (standalone A/B test tool) ----------
+add_executable(matrix_ab_test tools/ab_test.cpp)
+set_target_properties(matrix_ab_test PROPERTIES WIN32_EXECUTABLE FALSE)
+target_compile_options(matrix_ab_test PRIVATE /O2 /W3)
+target_compile_definitions(matrix_ab_test PRIVATE NOMINMAX)
+target_include_directories(matrix_ab_test PRIVATE
+    third_party
+    audio_engine/src/main/cpp
+    audio_engine/src/main/cpp/libusb/libusb)
+target_link_libraries(matrix_ab_test PRIVATE
+    audio_engine_windows usb1 winusb setupapi avrt)

@@ -27,7 +27,8 @@ public:
     bool configure(int rate, int channels, int bitDepth, bool strictBitperfect = false) override;
     bool start()  override;
     int  writeFloat32(const float* data, int numSamples) override;
-    int  writeFloat32Blocking(const float* data, int numSamples, int timeoutMs = 500) override;
+    int  writeFloat32Blocking(const float* data, int numSamples, int timeoutMs = 30000) override;
+    int  writeInt32Blocking(const int32_t* data, int numSamples, int timeoutMs = 30000) override;
     void flush()  override;
     void stop()   override;
     void close()  override;
@@ -35,6 +36,7 @@ public:
     int  getConfiguredChannels() const override { return channels_; }
     size_t ringAvailable() const override;
     bool waitForData(int minSamples, int timeoutMs) override;
+    int  getPreBufferSamples() const override;
 
 private:
     bool configureShared(int srcChannels);
@@ -67,5 +69,6 @@ private:
 
     std::thread       renderThread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> started_{false};
     std::atomic<int>  underrunCount_{0};
 };

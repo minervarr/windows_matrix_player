@@ -25,6 +25,34 @@ static int pickOutputRate(int inRate, const std::vector<int>& supported) {
     return supported.empty() ? 48000 : supported.back();
 }
 
+// Fast LCG for TPDF dither noise generation.
+static uint32_t s_lcgState = 0x9E3779B9u;
+static inline uint32_t lcgNext() {
+    s_lcgState = s_lcgState * 1664525u + 1013904223u;
+    return s_lcgState;
+}
+
+// TPDF dither + single quantize to the device's max bit depth.
+// Output is always int32 wire format (lower bits zeroed for 16/24-bit targets).
+static void ditherAndQuantize(const double* in, int32_t* out, int n, int bits) {
+    double scale = (bits == 16) ? 32767.0   * (double)(1 << 16)
+                 : (bits == 24) ? 8388607.0 * (double)(1 << 8)
+                 :                2147483647.0;
+    double ditherAmp = (bits < 32) ? (1.0 / scale) : 0.0;
+    for (int i = 0; i < n; i++) {
+        // TPDF: triangular distribution from two uniform random values
+        double r = ditherAmp * ((double)(int32_t)(lcgNext() >> 1) -
+                                (double)(int32_t)(lcgNext() >> 1)) * (1.0 / 1073741824.0);
+        double s = in[i] + r;
+        if (s >  1.0) s =  1.0;
+        if (s < -1.0) s = -1.0;
+        long long q = llround(s * scale);
+        if (q >  2147483647LL) q =  2147483647LL;
+        if (q < -2147483648LL) q = -2147483648LL;
+        out[i] = (int32_t)q;
+    }
+}
+
 static std::wstring utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
@@ -1820,11 +1848,15 @@ void PlayerWindow::onPlay() {
     // so feeding it into a wider slot stays bit-exact. Normal path always uses 32.
     int reqBits = isBitperfect ? active_->bitsPerSample() : 32;
     bool cfgOk = output_->configure(fileSr, active_->channels(), reqBits, isBitperfect);
-    if (!cfgOk && !useWasapi_ && !isBitperfect) {
-        auto rates = usbDriver_.getOutputRates();
-        outSr  = pickOutputRate(fileSr, rates);
-        cfgOk  = output_->configure(outSr, active_->channels(), 32, isBitperfect);
-        printf("[USB] native %d Hz unsupported, resampling to %d Hz\n", fileSr, outSr);
+    if (!cfgOk && !isBitperfect) {
+        // Negotiate the best rate the device supports (WASAPI: probe; USB: descriptor).
+        std::vector<int> supported = useWasapi_
+            ? output_->probeRates(active_->channels())
+            : usbDriver_.getOutputRates();
+        outSr = pickOutputRate(fileSr, supported);
+        cfgOk = output_->configure(outSr, active_->channels(), 32, false);
+        printf("[Audio] %d Hz unsupported -> negotiated %d Hz\n", fileSr, outSr);
+        fflush(stdout);
     }
     if (!cfgOk) {
         if (isBitperfect) {
@@ -1840,9 +1872,23 @@ void PlayerWindow::onPlay() {
     }
     outSr = output_->getConfiguredRate();
 
+    // Query device's maximum supported bit depth for the final quantize step.
+    int deviceMaxBits = 32;
+    if (useWasapi_ && !isBitperfect) {
+        auto* wasapi = static_cast<WasapiOutput*>(output_.get());
+        deviceMaxBits = wasapi->getMaxBitDepth(outSr, active_->channels());
+        if (deviceMaxBits <= 0) deviceMaxBits = 32;
+    } else if (!useWasapi_) {
+        deviceMaxBits = usbDriver_.getConfiguredBitDepth();
+        if (deviceMaxBits <= 0) deviceMaxBits = 32;
+    }
+    printf("[Audio] device max bit depth: %d\n", deviceMaxBits);
+    fflush(stdout);
+
     int capturedOutSr  = outSr;
     int capturedFileSr = fileSr;
     int capturedDacCh  = output_->getConfiguredChannels();
+    int capturedBits   = deviceMaxBits;
     auto* outPtr = output_.get();
 
     // Both modes decode the lossless int32 stream; Bit-Perfect writes it verbatim,
@@ -1874,35 +1920,81 @@ void PlayerWindow::onPlay() {
         playedFrames_.fetch_add(frames, std::memory_order_relaxed);
     };
   } else {
-    // Reference EQ: bit-transparent except for parametric EQ. Lossless int32
-    // decode, EQ applied in 64-bit double via EqProcessor::process32 (single
-    // rounded snap to the 32-bit grid), 32-bit to the DAC at the native rate.
-    // No resample, no upmix, no software gain beyond the EQ preamp.
+    // Reference EQ pipeline:
+    // - Rates match: EQ in 64-bit double, single quantize to int32, write. (fast path)
+    // - Rates differ: EQ to double, soxr FLOAT64_I VHQ resample, TPDF dither +
+    //   quantize once to device's max bit depth. (single quantization point)
     applyDeviceEq(capturedOutSr, active_->channels());
-    printf("[ReferenceEQ] int32 EQ path: %d-bit source @ %d Hz -> DAC %d-bit, EQ %s\n",
-           active_->bitsPerSample(), capturedOutSr, usbDriver_.getConfiguredBitDepth(),
+    printf("[ReferenceEQ] %d-bit source @ %d Hz -> device %d-bit @ %d Hz, EQ %s\n",
+           active_->bitsPerSample(), capturedFileSr, capturedBits, capturedOutSr,
            eqManager_.isActive() ? "active" : "bypass");
+    fflush(stdout);
 
-    callbackI32 = [this, outPtr](const int32_t* d, int n) {
+    const bool needsResample = (capturedFileSr != capturedOutSr);
+    const int  srcCh         = active_->channels();
+
+    // Pre-allocate buffers outside the lambda — never allocate on the audio thread.
+    // eqBuf holds EQ'd doubles; second half used as soxr output (in-place reuse).
+    // kDecodeChunk is the decoder's typical output frame count per callback.
+    const int kDecodeChunk = 4096;
+    const size_t eqHalf  = (size_t)(kDecodeChunk + 256) * srcCh;
+    auto eqBuf  = std::make_shared<std::vector<double>>(eqHalf * 2);
+
+    size_t outBufSz = needsResample
+        ? (size_t)ceil((double)(kDecodeChunk + 256) * capturedOutSr / capturedFileSr + 256) * srcCh
+        : (size_t)(kDecodeChunk + 256) * srcCh;
+    auto outBuf = std::make_shared<std::vector<int32_t>>(outBufSz);
+
+    std::shared_ptr<void> resamplerPtr;
+    if (needsResample) {
+        soxr_io_spec_t  io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);
+        soxr_quality_spec_t q = soxr_quality_spec(SOXR_VHQ, 0); // 28-bit, ~140 dB SNR
+        soxr_t r = soxr_create((double)capturedFileSr, (double)capturedOutSr, srcCh,
+                               nullptr, &io, &q, nullptr);
+        if (r) {
+            resamplerPtr = std::shared_ptr<void>(r, soxr_delete);
+            printf("[ReferenceEQ] soxr VHQ resampler created %d->%d Hz\n",
+                   capturedFileSr, capturedOutSr);
+        } else {
+            printf("[ReferenceEQ] ERROR: soxr_create failed\n");
+        }
+        fflush(stdout);
+    }
+
+    callbackI32 = [this, outPtr, eqBuf, outBuf, resamplerPtr,
+                   capturedFileSr, capturedOutSr, capturedBits, srcCh, needsResample, eqHalf]
+                  (const int32_t* d, int n) {
         if (d == nullptr || n == 0) return;
-        int srcCh  = active_->channels();
         int frames = srcCh > 0 ? n / srcCh : n;
 
-        // EQ in place on the decoder's own int32 buffer (not reused after return).
-        if (eqManager_.isActive())
+        if (!needsResample) {
+            // Fast path: rates match — EQ in double, single snap to int32.
             eqManager_.processInPlaceInt32(const_cast<int32_t*>(d), n);
-
-        int got = outPtr->writeInt32Blocking(d, n);
-        if (got < n) {
-            static DWORD lastShortLog = 0;
-            DWORD nowMs = GetTickCount();
-            if ((nowMs - lastShortLog) >= 1000) {
-                printf("[ReferenceEQ] short write: wanted=%d got=%d\n", n, got);
-                fflush(stdout);
-                lastShortLog = nowMs;
-            }
+            outPtr->writeInt32Blocking(d, n);
+            playedFrames_.fetch_add(frames, std::memory_order_relaxed);
+            return;
         }
-        playedFrames_.fetch_add(frames, std::memory_order_relaxed);
+
+        // Resample path: single quantization point.
+        // 1. EQ int32 → double (no snap)
+        eqManager_.processToDouble(d, eqBuf->data(), n);
+
+        // 2. Resample double → double using second half of eqBuf as output
+        size_t idone = 0, odone = 0;
+        soxr_process(static_cast<soxr_t>(resamplerPtr.get()),
+                     eqBuf->data(),        n / srcCh, &idone,
+                     eqBuf->data() + eqHalf, eqHalf / srcCh, &odone);
+        int resampN = (int)(odone * srcCh);
+
+        // Grow outBuf if needed (soxr may produce more than estimated on first call)
+        if (resampN > (int)outBuf->size())
+            outBuf->resize(resampN);
+
+        // 3. TPDF dither + quantize once to device's max bit depth
+        ditherAndQuantize(eqBuf->data() + eqHalf, outBuf->data(), resampN, capturedBits);
+
+        outPtr->writeInt32Blocking(outBuf->data(), resampN);
+        playedFrames_.fetch_add(resampN / srcCh, std::memory_order_relaxed);
     };
 
   } // end Reference EQ setup
@@ -1960,13 +2052,23 @@ void PlayerWindow::onStop() {
 }
 
 void PlayerWindow::prepareNextTrack() {
-    nextAlbum_ = currentAlbum_;
-    nextTrack_ = currentTrack_ + 1;
-    if (nextAlbum_ < 0 || nextAlbum_ >= (int)albums_.size() ||
-        nextTrack_ >= (int)albums_[nextAlbum_].tracks.size()) {
+    int album = currentAlbum_;
+    int track = currentTrack_ + 1;
+    if (album < 0 || album >= (int)albums_.size()) {
         nextAlbum_ = nextTrack_ = -1;
         return;
     }
+    // Advance to next album if we've exhausted this one
+    if (track >= (int)albums_[album].tracks.size()) {
+        album++;
+        track = 0;
+    }
+    if (album >= (int)albums_.size() || albums_[album].tracks.empty()) {
+        nextAlbum_ = nextTrack_ = -1;
+        return;
+    }
+    nextAlbum_ = album;
+    nextTrack_  = track;
     Decoder* preload = (active_ == &decoder_) ? &nextDecoder_ : &decoder_;
     preload->close();
     preload->open(albums_[nextAlbum_].tracks[nextTrack_].filePath);
@@ -2019,6 +2121,9 @@ void PlayerWindow::startGaplessCoordinator(PcmS32Callback cbI32, int outSr, int 
             PostMessageW(hwnd_, WM_APP_TRACK_CHANGE, currentAlbum_, currentTrack_);
 
             if (seamless) {
+                // Flush any leftover tail from the finished track before the next
+                // decoder starts writing, so old samples don't bleed into the new track.
+                if (output_) output_->flush();
                 incoming->setDoneCallback([this] {
                     std::lock_guard<std::mutex> lk2(gaplessMu_);
                     gaplessSignal_ = true;

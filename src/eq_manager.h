@@ -9,6 +9,9 @@ public:
     // Reference EQ path: EQ a left-justified int32 buffer in place (encoding 22 →
     // EqProcessor::process32, double math + single rounded snap to the 32-bit grid).
     void processInPlaceInt32(int32_t* data, int numSamples);
+    // EQ int32 input to double[] without quantizing — used before resampling.
+    // If EQ is inactive, just scales int32 to double.
+    void processToDouble(const int32_t* in, double* out, int numSamples);
     bool isActive() const { return active_.load(std::memory_order_relaxed); }
     void clear();
 

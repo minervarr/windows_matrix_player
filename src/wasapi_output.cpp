@@ -335,10 +335,14 @@ bool WasapiOutput::configureExclusive(int rate, int channels, bool strictBitperf
     }
 
     if (strictBitperfect) {
-        printf("[WASAPI] Exclusive: no supported format for %d Hz %dch, strict bitperfect failing\n", rate, channels);
+        printf("[WASAPI] Exclusive: no supported format for %d Hz %dch, strict bitperfect failing\n",
+               rate, channels);
         return false;
     }
 
+    // No exclusive format worked — fall back to shared mode so devices like Bluetooth
+    // that don't support exclusive still play. The caller reads getConfiguredRate() and
+    // resamples if the OS mix rate differs from the file rate.
     printf("[WASAPI] Exclusive: no supported format for %d Hz %dch, falling back to shared\n",
            rate, channels);
     if (!pAudioClient_)
@@ -346,6 +350,57 @@ bool WasapiOutput::configureExclusive(int rate, int channels, bool strictBitperf
     mode_ = WasapiMode::Shared;
     useEvent_ = true;
     return configureShared(channels);
+}
+
+// ── Format probing ─────────────────────────────────────────────────────────────
+
+static IAudioClient* activateClient(IMMDevice* pDevice) {
+    IAudioClient* pClient = nullptr;
+    pDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pClient);
+    return pClient;
+}
+
+std::vector<int> WasapiOutput::probeRates(int channels) const {
+    static const int kRates[] = {
+        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+    };
+    std::vector<int> supported;
+    if (!pDevice_) return supported;
+
+    IAudioClient* pClient = activateClient(pDevice_);
+    if (!pClient) return supported;
+
+    for (int rate : kRates) {
+        WAVEFORMATEXTENSIBLE wfex = makeExclusiveFormat(rate, channels, WireFormat::Int32);
+        HRESULT hr = pClient->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                                (WAVEFORMATEX*)&wfex, nullptr);
+        if (SUCCEEDED(hr))
+            supported.push_back(rate);
+    }
+    pClient->Release();
+    return supported;
+}
+
+int WasapiOutput::getMaxBitDepth(int rate, int channels) const {
+    if (!pDevice_) return 32;
+    IAudioClient* pClient = activateClient(pDevice_);
+    if (!pClient) return 32;
+
+    static const WireFormat kOrder[] = {
+        WireFormat::Int32, WireFormat::Int24In32, WireFormat::Int16
+    };
+    static const int kBits[] = { 32, 24, 16 };
+
+    int result = 32;
+    for (int i = 0; i < 3; i++) {
+        WAVEFORMATEXTENSIBLE wfex = makeExclusiveFormat(rate, channels, kOrder[i]);
+        HRESULT hr = pClient->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                                (WAVEFORMATEX*)&wfex, nullptr);
+        if (SUCCEEDED(hr)) { result = kBits[i]; break; }
+    }
+    pClient->Release();
+    printf("[WASAPI] getMaxBitDepth(%d Hz, %dch) = %d\n", rate, channels, result);
+    return result;
 }
 
 // ── Ring buffer ────────────────────────────────────────────────────────────────

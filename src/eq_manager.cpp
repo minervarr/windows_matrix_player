@@ -42,6 +42,15 @@ void EqManager::processInPlaceInt32(int32_t* data, int numSamples) {
     processors_[idx].process(reinterpret_cast<uint8_t*>(data), numSamples * sizeof(int32_t));
 }
 
+void EqManager::processToDouble(const int32_t* in, double* out, int numSamples) {
+    if (!active_.load(std::memory_order_relaxed)) {
+        EqProcessor::scaleToDouble(in, out, numSamples);
+        return;
+    }
+    int idx = activeIdx_.load(std::memory_order_acquire);
+    processors_[idx].processToDouble(in, out, numSamples);
+}
+
 void EqManager::clear() {
     active_.store(false, std::memory_order_release);
     processors_[0].setEnabled(false);

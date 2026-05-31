@@ -37,6 +37,8 @@ public:
     virtual size_t ringAvailable() const { return 0; }
     virtual bool waitForData(int minSamples, int timeoutMs) { (void)minSamples; (void)timeoutMs; return true; }
     virtual int  getPreBufferSamples() const { return 4096; }
+    // Returns exclusive-mode sample rates the device accepts. Empty = unknown (USB uses descriptor).
+    virtual std::vector<int> probeRates(int /*channels*/) const { return {}; }
 };
 
 // Thin adapter so UsbAudioDriver satisfies AudioOutput.

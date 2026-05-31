@@ -25,6 +25,10 @@ public:
     ~WasapiOutput() override;
 
     bool configure(int rate, int channels, int bitDepth, bool strictBitperfect = false) override;
+    // Returns all exclusive-mode sample rates the device accepts (uses IsFormatSupported only).
+    std::vector<int> probeRates(int channels) const override;
+    // Returns the highest bit depth the device supports at (rate, channels) in exclusive mode.
+    int getMaxBitDepth(int rate, int channels) const;
     bool start()  override;
     int  writeFloat32(const float* data, int numSamples) override;
     int  writeFloat32Blocking(const float* data, int numSamples, int timeoutMs = 30000) override;

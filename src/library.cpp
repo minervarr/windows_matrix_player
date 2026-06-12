@@ -36,6 +36,24 @@ std::string resolveArtPath(const std::string& folderPath) {
     return "";
 }
 
+static std::string deriveAlbumArtist(const std::vector<Track>& tracks) {
+    std::string result;
+    // Prefer ALBUMARTIST tags — check all tracks for consistency
+    for (auto& t : tracks) {
+        if (t.albumArtist.empty()) continue;
+        if (result.empty()) result = t.albumArtist;
+        else if (result != t.albumArtist) return "Various Artists";
+    }
+    if (!result.empty()) return result;
+    // Fall back to ARTIST — if tracks disagree, it's a various-artists album
+    for (auto& t : tracks) {
+        if (t.artist.empty()) continue;
+        if (result.empty()) result = t.artist;
+        else if (result != t.artist) return "Various Artists";
+    }
+    return result;
+}
+
 void Album::sortTracks() {
     std::sort(tracks.begin(), tracks.end(), [](const Track& a, const Track& b) {
         if (a.trackNumber != b.trackNumber) return a.trackNumber < b.trackNumber;
@@ -185,11 +203,7 @@ std::vector<Album> scanLibrary(const std::string& rootPath) {
         album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
-        // Derive album artist from tags
-        for (auto& t : album.tracks) {
-            if (!t.albumArtist.empty()) { album.artist = t.albumArtist; break; }
-            if (!t.artist.empty() && album.artist.empty()) album.artist = t.artist;
-        }
+        album.artist = deriveAlbumArtist(album.tracks);
         album.sortTracks();
         albums.push_back(std::move(album));
     }
@@ -254,10 +268,7 @@ IncrementalScanResult scanLibraryIncremental(
         album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
-        for (auto& t : album.tracks) {
-            if (!t.albumArtist.empty()) { album.artist = t.albumArtist; break; }
-            if (!t.artist.empty() && album.artist.empty()) album.artist = t.artist;
-        }
+        album.artist = deriveAlbumArtist(album.tracks);
         album.sortTracks();
         result.albums.push_back(std::move(album));
     }
@@ -325,10 +336,7 @@ std::vector<Album> scanLibraryParallel(const std::string& rootPath) {
         album.name   = fs::u8path(folder).filename().u8string();
         album.tracks = std::move(tracks);
         album.artPath = resolveArtPath(folder);
-        for (auto& t : album.tracks) {
-            if (!t.albumArtist.empty()) { album.artist = t.albumArtist; break; }
-            if (!t.artist.empty() && album.artist.empty()) album.artist = t.artist;
-        }
+        album.artist = deriveAlbumArtist(album.tracks);
         album.sortTracks();
         albums.push_back(std::move(album));
     }
